@@ -1,0 +1,73 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Prepare web files and bundle fonts for offline use
+        run: |
+          mkdir -p www
+          cp Notes.html www/index.html
+          python3 - <<'PY'
+          import re, os, urllib.request
+          ua = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36'
+          url = 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Figtree:wght@400;500;600&display=swap'
+
+          def get(u):
+              return urllib.request.urlopen(urllib.request.Request(u, headers={'User-Agent': ua})).read()
+
+          css = get(url).decode('utf-8')
+          os.makedirs('www/fonts', exist_ok=True)
+          for i, u in enumerate(sorted(set(re.findall(r'url\((https://[^)]+)\)', css)))):
+              name = 'f%d.woff2' % i
+              open('www/fonts/' + name, 'wb').write(get(u))
+              css = css.replace(u, 'fonts/' + name)
+          open('www/fonts.css', 'w', encoding='utf-8').write(css)
+
+          s = open('www/index.html', encoding='utf-8').read()
+          assert url in s, 'font link not found'
+          s = s.replace(url, 'fonts.css')
+          open('www/index.html', 'w', encoding='utf-8').write(s)
+          PY
+
+      - name: Create Android project
+        run: |
+          npm init -y
+          npm install @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+          npx cap init "My Notes" com.mynotes.app --web-dir=www
+          npx cap add android
+
+      - name: Generate app icon (only if assets/icon-only.png exists)
+        run: |
+          if [ -f assets/icon-only.png ]; then
+            npm install @capacitor/assets
+            npx capacitor-assets generate --android --iconBackgroundColor '#ffffff' --iconBackgroundColorDark '#ffffff'
+          fi
+
+      - name: Build APK
+        run: |
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyNotes-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
